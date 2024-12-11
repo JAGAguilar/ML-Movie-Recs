@@ -1,6 +1,5 @@
 import pandas as pd
 from gensim.models import Word2Vec
-from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.metrics import accuracy_score,precision_score,recall_score
 import numpy as np
@@ -82,24 +81,46 @@ filtered_data = filtered_data.drop(columns='tag')
 
 #Query is the movie we want to isolate
 #Cosine Similarities
-def knn_recommendation_cos(query,train_data,k=5):
-    #Extract ratings and feature vectors from training set
-    #Ratings are optional if you don't want them, I have them here to use as bias
-    train_features = np.array(train_data['feature_vector'].tolist())
-    train_ratings = train_data['average_rating'].values#Optional
+def knn_recommendation_cos(query_vector,train_data,watched_movies,k=5):
 
-    #kNN using cosine_similarity
-    similarities = cosine_similarity([query],train_features).flatten()
+    # Extract feature vectors and movieIds
+    movie_ids = train_data['movieId'].values
+    feature_vectors = np.vstack(train_data['feature_vector'].values)
 
-    #Optional Bias
-    weighted_similarities = similarities * train_ratings
+    # Calculate cosine similarities
+    similarities = cosine_similarity([query_vector], feature_vectors).flatten()
 
-    #get the indicies of nearest movies (5)
-    kNN_indices = np.argsort(weighted_similarities)[-k:][::-1] #Sorted by weighted similariy in descending order
+    # Combine movieIds with similarities
+    recommendations = list(zip(movie_ids, similarities))
 
-    #Get the movies from the index
-    kNN_movies = train_data.iloc[kNN_indices]
-    return kNN_movies
+    # Sort by similarity score in descending order
+    recommendations = sorted(recommendations, key=lambda x: x[1], reverse=True)
+
+    # Exclude movies the user has already watched
+    recommendations = [rec for rec in recommendations if rec[0] not in watched_movies]
+
+    # Remove duplicates by keeping only the first occurrence of each movieId
+    seen_movies = set()
+    unique_recommendations = []
+    for rec in recommendations:
+        if rec[0] not in seen_movies:
+            unique_recommendations.append(rec)
+            seen_movies.add(rec[0])
+
+    # Take top-k unique recommendations
+    top_k = unique_recommendations[:k]
+
+    # Create a DataFrame for the top-k recommendations
+    recommended_movie_ids = [rec[0] for rec in top_k]
+    recommended_scores = [rec[1] for rec in top_k]
+
+    # Removes already recommended movies by movieId 
+    recommended_movies = train_data[train_data['movieId'].isin(recommended_movie_ids)]
+    recommended_movies = recommended_movies.drop_duplicates(subset=['movieId'])
+    recommended_movies = recommended_movies.set_index('movieId').loc[recommended_movie_ids].reset_index()
+    recommended_movies['similarity_score'] = recommended_scores
+
+    return recommended_movies
 
 #if you want to compare cosine to euclidean distance
 def knn_recommendation_eucl(query,train_data,k=5):
@@ -122,12 +143,56 @@ def knn_recommendation_eucl(query,train_data,k=5):
     return kNN_movies
 
 
-def test_knn(test_data,train_data,k=5):
-    for _,row in test_data.iterrows():
-        query = np.array(row['feature_vector'])
-        knn_movies = knn_recommendation_cos(query,train_data,k)
-        print(f"Current Movie searched: {row['title']}")
-        print("Recommended Movies: ")
-        print(knn_movies[['title','average_rating']])
-        print()
+def my_train_test_split(df, filt_data, n=7):
+    # Create empty lists to store train and test data
+    train_list = []
+    test_list = []
+
+    # Group by 'userID' to process each user individually
+    df.drop(columns='timestamp')
+    merged_df = pd.merge(df, filt_data, on='movieId')
+    grouped = merged_df.groupby('userId')
+
+    for _, group in grouped:
+        # Sort movies by rating in descending order
+        sorted_group = group.sort_values(by='rating', ascending=False)
+        
+        # Select the top n rated movies for testing
+        test = sorted_group.head(n)
+        
+        # Use the rest for training
+        train = sorted_group.iloc[n:]
+        
+        # Append to respective lists
+        test_list.append(test)
+        train_list.append(train)
+
+    # Combine all train and test splits into DataFrames
+    train_data = pd.concat(train_list).reset_index(drop=True)
+    test_data = pd.concat(test_list).reset_index(drop=True)
+
+    # print("Training Data:")
+    # print(train_data)
+    # print("\nTesting Data:")
+    # print(test_data)
+    # print(type(train_data))
+
+    return train_data, test_data
+
+# train_data, test_data = my_train_test_split(rate, filtered_data,n=0)
+train_data1, test_data1 = my_train_test_split(rate, filtered_data,n=5)
+
+def finalResults():
+    #this is a hardcoded test set, if you want to implement your test data try using a for loop to iterate through it
+    query_vector = test_data1.loc[test_data1['movieId'] == 4878, 'feature_vector'].values[0]
+    print(test_data1.loc[test_data1['movieId']==4878,'title'].values[0])
+    # print(query_vector)
+    #calling the recommendation service based on cosine similarity with similarity scores
+    recommended_movies = knn_recommendation_cos(query_vector, train_data1, rate[rate['userId'] == 610]['movieId'].values)
+    # print(recommended_movies)
+    #clean up the output by dropping user id's ratings of specific user and timestamp
+    recommended_movies = recommended_movies.drop(columns=['userId','rating','timestamp'])
+
+    return recommended_movies
+print(finalResults())
 
